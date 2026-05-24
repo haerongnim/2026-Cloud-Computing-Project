@@ -1,0 +1,22 @@
+services:
+  cc-term-flask:
+    build: .
+    container_name: cc-term-flask
+    restart: unless-stopped
+    expose:
+      - "5000"
+    env_file:
+      - .env
+    volumes:
+      - ./uploads:/app/uploads
+
+  nginx:
+    image: nginx
+    container_name: cc-term-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf
+    depends_on:
+      - cc-term-flask
