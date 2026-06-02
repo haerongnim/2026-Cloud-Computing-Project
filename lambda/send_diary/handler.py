@@ -8,7 +8,7 @@ Lambda Function 3: send_diary
 import json
 import boto3
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 
 ses      = boto3.client("ses",      region_name=os.environ.get("SES_REGION",  "us-east-1"))
 dynamodb = boto3.resource("dynamodb", region_name=os.environ.get("AWS_REGION", "ap-northeast-2"))
@@ -75,7 +75,7 @@ def lambda_handler(event, context):
                 ExpressionAttributeNames={"#st": "status"},
                 ExpressionAttributeValues={
                     ":s": "EMAIL_SENT",
-                    ":t": datetime.utcnow().isoformat(),
+                    ":t": datetime.now(timezone.utc).isoformat(),
                 },
             )
 
@@ -84,6 +84,18 @@ def lambda_handler(event, context):
 
         except Exception as e:
             print(f"[ERROR] {e}")
+
+            try:
+                if 'entry_id' in locals():
+                    table = dynamodb.Table(TABLE_NAME)
+                    table.update_item( 
+                        Key={"entry_id": entry_id},
+                        UpdateExpression="SET #st = :s, error_message = :e",
+                        ExpressionAttributeNames={"#st": "status"},
+                        ExpressionAttributeValues={":s": "FAILED", ":e": str(e)},
+                    )
+            except Exception as db_error:
+                print(f"[ERROR] Failed to update DynamoDB for entry_id={entry_id}: {db_error}") 
 
     return {"emails_sent": sent}
 

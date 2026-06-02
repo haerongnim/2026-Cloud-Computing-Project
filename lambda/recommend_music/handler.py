@@ -84,6 +84,14 @@ def lambda_handler(event, context):
         except Exception as e:
             print(f"[ERROR] entry_id={entry_id}: {e}")
 
+            table = dynamodb.Table(TABLE_NAME)
+            table.update_item( 
+                Key={"entry_id": entry_id},
+                UpdateExpression="SET #st = :s, error_message = :e",
+                ExpressionAttributeNames={"#st": "status"},
+                ExpressionAttributeValues={":s": "FAILED", ":e": str(e)},
+            )
+
     return {"processed": processed}
 
 

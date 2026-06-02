@@ -35,24 +35,30 @@ def lambda_handler(event, context):
     {
         "user_id": "user@example.com",
         "s3_bucket": "emotion-diary-images",
-        "s3_key": "uploads/user123/photo.jpg"
+        "s3_key": "uploads/user123/photo.jpg",
+        "date": "2026-05-30"
     }
     """
+    entry_id = str(uuid.uuid4())
+    user_id = None
+    s3_key = None
+    date = None
+
     try:
         body = json.loads(event.get("body", "{}")) if isinstance(event.get("body"), str) else event
 
         user_id  = body.get("user_id")
         s3_bucket = body.get("s3_bucket")
         s3_key    = body.get("s3_key")
+        date      = body.get("date")
 
-        if not all([user_id, s3_bucket, s3_key]):
-            return _response(400, {"error": "user_id, s3_bucket, s3_key are required"})
+        if not all([user_id, s3_bucket, s3_key, date]):
+            return _response(400, {"error": "user_id, s3_bucket, s3_key, and date are required"})
 
         # 1. Rekognition 감정 분석
         emotion_label, confidence, raw_emotions = _detect_emotion(s3_bucket, s3_key)
 
         # 2. DynamoDB 저장 (이 이벤트가 recommend_music Lambda를 트리거)
-        entry_id = str(uuid.uuid4())
         timestamp = datetime.now(timezone.utc).isoformat()
         genre = EMOTION_TO_GENRE.get(emotion_label, "pop")
 
@@ -66,6 +72,7 @@ def lambda_handler(event, context):
             "raw_emotions":  json.dumps(raw_emotions),
             "genre":         genre,
             "s3_key":        s3_key,
+            "date":          date,
             "status":        "EMOTION_ANALYZED",   # recommend_music이 PLAYLIST_READY로 업데이트
         })
 
@@ -78,13 +85,17 @@ def lambda_handler(event, context):
             "message":    "Emotion analyzed. Playlist recommendation triggered."
         })
 
-    except rekognition.exceptions.InvalidS3ObjectException:
+    except rekognition.exceptions.InvalidS3ObjectException as e:
+        _save_failed_entry(entry_id, user_id, date, s3_key, "S3 object not found or invalid image")
         return _response(400, {"error": "S3 object not found or invalid image"})
+
     except ValueError as e:
-        # 얼굴 미감지 등 클라이언트 입력 문제
+        _save_failed_entry(entry_id, user_id, date, s3_key, str(e))
         return _response(400, {"error": str(e)})
+
     except Exception as e:
         print(f"[ERROR] {e}")
+        _save_failed_entry(entry_id, user_id, date, s3_key, str(e))
         return _response(500, {"error": str(e)})
 
 
@@ -117,3 +128,15 @@ def _response(status_code: int, body: dict):
         },
         "body": json.dumps(body, ensure_ascii=False),
     }
+
+def _save_failed_entry(entry_id, user_id, date, s3_key, error_message):
+    table = dynamodb.Table(TABLE_NAME)
+    table.put_item(Item={
+        "entry_id": entry_id,
+        "user_id": user_id or "unknown_user",
+        "date": date or "unknown_date",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "s3_key": s3_key or "",
+        "status": "FAILED",
+        "error_message": str(error_message),
+    })
