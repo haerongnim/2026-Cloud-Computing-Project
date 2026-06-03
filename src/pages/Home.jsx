@@ -1,24 +1,36 @@
-import { useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import Calendar from '../components/Calendar'
 import DiaryModal from '../components/modals/DiaryModal'
 import UploadModal from '../components/modals/UploadModal'
 import ResultModal from '../components/modals/ResultModal'
 import SidePanel from '../components/SidePanel'
-
-const DUMMY_ENTRIES = {
-  '2026-05-01': { albumCover: null, emotion: 'Happy (82%)', playlist: [{ name: 'Good as Hell', artist: 'Lizzo', albumCover: '' }] },
-  '2026-05-03': { albumCover: null, emotion: 'Calm (74%)', playlist: [] },
-  '2026-05-07': { albumCover: null, emotion: 'Sad (61%)', playlist: [] },
-  '2026-05-10': { albumCover: null, emotion: 'Surprised (55%)', playlist: [] },
-  '2026-05-15': { albumCover: null, emotion: 'Happy (90%)', playlist: [] },
-  '2026-05-19': { albumCover: null, emotion: 'Calm (68%)', playlist: [] },
-}
+import { loadAuthSession, loadMonth } from '../api'
 
 export default function Home() {
   const [selectedDate, setSelectedDate] = useState(null)
   const [modalType, setModalType] = useState(null)
   const [resultData, setResultData] = useState(null)
-  const [entries, setEntries] = useState(DUMMY_ENTRIES)
+  const [entries, setEntries] = useState({})
+  const [identityRevision, setIdentityRevision] = useState(0)
+  const [sessionReady, setSessionReady] = useState(false)
+
+  useEffect(() => {
+    loadAuthSession().then(() => setSessionReady(true)).catch(console.error)
+  }, [])
+
+  const handleMonthChange = useCallback(async month => {
+    try {
+      setEntries(await loadMonth(month))
+    } catch (error) {
+      console.error(error)
+    }
+  }, [identityRevision])
+
+  function handleAuthChange() {
+    closeModal()
+    setEntries({})
+    setIdentityRevision(value => value + 1)
+  }
 
   function handleDateClick(dateStr, hasEntry) {
     setSelectedDate(dateStr)
@@ -46,10 +58,12 @@ export default function Home() {
   return (
     <div className="min-h-screen w-full flex items-center justify-center p-8 relative">
       <div className="absolute left-20 top-100 -translate-y-1/2 w-64">
-        <SidePanel />
+        {sessionReady && <SidePanel onAuthChange={handleAuthChange} />}
       </div>
 
-      <Calendar entries={entries} onDateClick={handleDateClick} />
+      {sessionReady && (
+        <Calendar entries={entries} onDateClick={handleDateClick} onMonthChange={handleMonthChange} />
+      )}
 
       {modalType === 'diary' && (
         <DiaryModal date={selectedDate} entry={entries[selectedDate]} onClose={closeModal} />

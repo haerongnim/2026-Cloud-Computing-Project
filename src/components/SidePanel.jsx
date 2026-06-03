@@ -1,22 +1,22 @@
 import { useState } from 'react'
 import { useAuth } from '../hooks/useAuth'
 
-export default function SidePanel() {
-  const { user, login, signup, logout } = useAuth()
+export default function SidePanel({ onAuthChange }) {
+  const { user, login, signup, logout } = useAuth(onAuthChange)
   const [isSignup, setIsSignup] = useState(false)
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [nickname, setNickname] = useState('')
   const [error, setError] = useState('')
 
-  function handleSubmit(e) {
+  async function handleSubmit(e) {
     e.preventDefault()
     setError('')
     try {
       if (isSignup) {
-        signup(email, password, nickname)
+        await signup(email, password, nickname)
       } else {
-        login(email, password)
+        await login(email, password)
       }
       setEmail('')
       setPassword('')

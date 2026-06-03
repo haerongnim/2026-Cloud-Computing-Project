@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import DateCell from './DateCell'
 
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
@@ -7,7 +7,7 @@ const MONTHS = [
   'July','August','September','October','November','December'
 ]
 
-export default function Calendar({ entries, onDateClick }) {
+export default function Calendar({ entries, onDateClick, onMonthChange }) {
   const now = new Date()
   const [year, setYear] = useState(now.getFullYear())
   const [month, setMonth] = useState(now.getMonth())
@@ -18,6 +18,10 @@ export default function Calendar({ entries, onDateClick }) {
 
   const firstDay = new Date(year, month, 1).getDay()
   const daysInMonth = new Date(year, month + 1, 0).getDate()
+
+  useEffect(() => {
+    onMonthChange?.(`${year}-${String(month + 1).padStart(2, '0')}`)
+  }, [year, month, onMonthChange])
 
   function prevMonth() {
     if (month === 0) { setYear(y => y - 1); setMonth(11) }

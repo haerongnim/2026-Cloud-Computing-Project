@@ -1,0 +1,322 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Emotion Diary serverless backend in ap-northeast-2
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: emotion-diary
+  ArtifactBucket:
+    Type: String
+  ArtifactPrefix:
+    Type: String
+    Default: emotion-diary
+  AnalyzeCodeS3Key:
+    Type: String
+  RecommendCodeS3Key:
+    Type: String
+  SendDiaryCodeS3Key:
+    Type: String
+  SpotifySecretArn:
+    Type: String
+  SesFromEmail:
+    Type: String
+  AllowedOrigin:
+    Type: String
+    Default: '*'
+
+Resources:
+  ImageBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      CorsConfiguration:
+        CorsRules:
+          - AllowedHeaders: ['*']
+            AllowedMethods: [GET, HEAD, POST]
+            AllowedOrigins: [!Ref AllowedOrigin]
+            MaxAge: 300
+
+  DiaryTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: entry_id
+          AttributeType: S
+        - AttributeName: user_id
+          AttributeType: S
+        - AttributeName: date
+          AttributeType: S
+      KeySchema:
+        - AttributeName: entry_id
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: user-date-index
+          KeySchema:
+            - AttributeName: user_id
+              KeyType: HASH
+            - AttributeName: date
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      SSESpecification:
+        SSEEnabled: true
+      StreamSpecification:
+        StreamViewType: NEW_AND_OLD_IMAGES
+
+  DiaryTopic:
+    Type: AWS::SNS::Topic
+
+  AnalyzeFailureQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      MessageRetentionPeriod: 1209600
+
+  RecommendFailureQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      MessageRetentionPeriod: 1209600
+
+  AnalyzeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: {Service: lambda.amazonaws.com}
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: AnalyzeDiary
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: s3:GetObject
+                Resource: !Sub '${ImageBucket.Arn}/uploads/*'
+              - Effect: Allow
+                Action: rekognition:DetectFaces
+                Resource: '*'
+              - Effect: Allow
+                Action: [dynamodb:GetItem, dynamodb:UpdateItem]
+                Resource: !GetAtt DiaryTable.Arn
+              - Effect: Allow
+                Action: sqs:SendMessage
+                Resource: !GetAtt AnalyzeFailureQueue.Arn
+
+  RecommendRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: {Service: lambda.amazonaws.com}
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: RecommendDiary
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [dynamodb:DescribeStream, dynamodb:GetRecords, dynamodb:GetShardIterator]
+                Resource: !GetAtt DiaryTable.StreamArn
+              - Effect: Allow
+                Action: dynamodb:ListStreams
+                Resource: '*'
+              - Effect: Allow
+                Action: [dynamodb:GetItem, dynamodb:UpdateItem]
+                Resource: !GetAtt DiaryTable.Arn
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Ref SpotifySecretArn
+              - Effect: Allow
+                Action: sns:Publish
+                Resource: !Ref DiaryTopic
+              - Effect: Allow
+                Action: sqs:SendMessage
+                Resource: !GetAtt RecommendFailureQueue.Arn
+
+  SendDiaryRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: {Service: lambda.amazonaws.com}
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: SendDiary
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [dynamodb:GetItem, dynamodb:UpdateItem]
+                Resource: !GetAtt DiaryTable.Arn
+              - Effect: Allow
+                Action: ses:SendEmail
+                Resource: '*'
+
+  Ec2WebRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: {Service: ec2.amazonaws.com}
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: WebServerDiaryAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [s3:PutObject, s3:GetObject, s3:DeleteObject]
+                Resource: !Sub '${ImageBucket.Arn}/uploads/*'
+              - Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource: !GetAtt AnalyzeFunction.Arn
+              - Effect: Allow
+                Action: [dynamodb:GetItem, dynamodb:PutItem, dynamodb:DeleteItem, dynamodb:Query]
+                Resource:
+                  - !GetAtt DiaryTable.Arn
+                  - !Sub '${DiaryTable.Arn}/index/user-date-index'
+
+  Ec2WebInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles: [!Ref Ec2WebRole]
+
+  AnalyzeFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-analyze-emotion'
+      Runtime: python3.12
+      Handler: handler.lambda_handler
+      Role: !GetAtt AnalyzeRole.Arn
+      Timeout: 30
+      Code:
+        S3Bucket: !Ref ArtifactBucket
+        S3Key: !Ref AnalyzeCodeS3Key
+      Environment:
+        Variables:
+          DYNAMODB_TABLE: !Ref DiaryTable
+
+  RecommendFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-recommend-music'
+      Runtime: python3.12
+      Handler: handler.lambda_handler
+      Role: !GetAtt RecommendRole.Arn
+      Timeout: 30
+      Code:
+        S3Bucket: !Ref ArtifactBucket
+        S3Key: !Ref RecommendCodeS3Key
+      Environment:
+        Variables:
+          DYNAMODB_TABLE: !Ref DiaryTable
+          SNS_TOPIC_ARN: !Ref DiaryTopic
+          SPOTIFY_SECRET_ARN: !Ref SpotifySecretArn
+
+  SendDiaryFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-send-diary'
+      Runtime: python3.12
+      Handler: handler.lambda_handler
+      Role: !GetAtt SendDiaryRole.Arn
+      Timeout: 30
+      Code:
+        S3Bucket: !Ref ArtifactBucket
+        S3Key: !Ref SendDiaryCodeS3Key
+      Environment:
+        Variables:
+          DYNAMODB_TABLE: !Ref DiaryTable
+          SES_FROM_EMAIL: !Ref SesFromEmail
+
+  AnalyzeLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${AnalyzeFunction}'
+      RetentionInDays: 14
+
+  RecommendLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${RecommendFunction}'
+      RetentionInDays: 14
+
+  SendDiaryLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${SendDiaryFunction}'
+      RetentionInDays: 14
+
+  AnalyzeInvokeConfig:
+    Type: AWS::Lambda::EventInvokeConfig
+    Properties:
+      FunctionName: !Ref AnalyzeFunction
+      Qualifier: $LATEST
+      MaximumRetryAttempts: 2
+      DestinationConfig:
+        OnFailure:
+          Destination: !GetAtt AnalyzeFailureQueue.Arn
+
+  RecommendStreamMapping:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      FunctionName: !Ref RecommendFunction
+      EventSourceArn: !GetAtt DiaryTable.StreamArn
+      StartingPosition: LATEST
+      BatchSize: 10
+      BisectBatchOnFunctionError: true
+      MaximumRetryAttempts: 3
+      DestinationConfig:
+        OnFailure:
+          Destination: !GetAtt RecommendFailureQueue.Arn
+
+  SendDiarySubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref DiaryTopic
+      Protocol: lambda
+      Endpoint: !GetAtt SendDiaryFunction.Arn
+
+  SendDiaryPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref SendDiaryFunction
+      Principal: sns.amazonaws.com
+      SourceArn: !Ref DiaryTopic
+
+Outputs:
+  AwsRegion:
+    Value: ap-northeast-2
+  ImageBucketName:
+    Value: !Ref ImageBucket
+  DiaryTableName:
+    Value: !Ref DiaryTable
+  AnalyzeFunctionName:
+    Value: !Ref AnalyzeFunction
+  Ec2InstanceProfileName:
+    Value: !Ref Ec2WebInstanceProfile
+  SnsTopicArn:
+    Value: !Ref DiaryTopic
