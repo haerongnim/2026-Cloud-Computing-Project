@@ -61,7 +61,6 @@ export async function loadMonth(month) {
 async function pollDiaryEntry(entryId) {
   for (let attempt = 0; attempt < 30; attempt += 1) {
     const entry = await jsonRequest(`/api/v1/entries/${entryId}`)
-    console.log('폴링 결과:', entry) 
     if (entry.status === 'FAILED') throw new Error('Emotion analysis failed')
     if (['PLAYLIST_READY', 'EMAIL_SENDING', 'EMAIL_SENT'].includes(entry.status)) return toCalendarEntry(entry)
     await new Promise(resolve => setTimeout(resolve, 1000))
