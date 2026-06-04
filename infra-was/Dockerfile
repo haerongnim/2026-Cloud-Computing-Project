@@ -30,7 +30,9 @@ COPY --from=build-stage /app/venv /app/venv
 
 COPY . .
 
-RUN useradd -m appuser -u 1000
+RUN useradd -m appuser -u 1000 && \
+    mkdir -p /app/.local && \
+    chown -R appuser:appuser /app/.local
 USER appuser
 
 EXPOSE 5000

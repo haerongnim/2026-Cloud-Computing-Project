@@ -1,4 +1,5 @@
 import { useState, useRef } from 'react'
+import { createDiaryEntry } from '../../api'
 
 export default function UploadModal({ date, onDone, onClose }) {
   const [mode, setMode] = useState(null)
@@ -41,18 +42,19 @@ export default function UploadModal({ date, onDone, onClose }) {
   async function handleAnalyze() {
     if (!preview) return
     setLoading(true)
-    // TODO: 백엔드 API 연결
-    await new Promise(r => setTimeout(r, 1500))
-    const dummyResult = {
-      albumCover: preview,
-      emotion: 'Happy (82%)',
-      playlist: [
-        { name: 'Good as Hell', artist: 'Lizzo', albumCover: '' },
-        { name: 'Happy', artist: 'Pharrell Williams', albumCover: '' },
-      ],
+
+    try {
+      const res = await fetch(preview)
+      const blob = await res.blob()
+
+      const result = await createDiaryEntry({ blob, date })
+      onDone({ ...result, albumCover: result.albumCover ?? preview })
+    } catch (error) {
+      console.error(error)
+      alert('분석 중 오류가 발생했습니다.')
+    } finally {
+      setLoading(false)
     }
-    setLoading(false)
-    onDone(dummyResult)
   }
 
   const btnBase = 'w-full py-3 rounded-xl border border-[#d4c9b0] bg-white text-[#5c3d1e] text-sm font-medium hover:bg-[#fdf6e3] transition-colors'

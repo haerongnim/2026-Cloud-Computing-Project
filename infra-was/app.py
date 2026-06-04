@@ -1,95 +1,157 @@
-import os
+import logging
 from uuid import uuid4
 
-from flask import Flask, jsonify, request
-from werkzeug.utils import secure_filename
-from dotenv import load_dotenv
+from flask import Flask, jsonify, request, send_file, session
+from flask_cors import CORS
+from werkzeug.exceptions import RequestEntityTooLarge
 
-from services.emotion_service import analyze_emotion
-from services.music_service import recommend_music
-from services.diary_service import create_diary
-
-load_dotenv()
-
-app = Flask(__name__)
-
-UPLOAD_FOLDER = "uploads"
-ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg"}
-MAX_UPLOAD_SIZE_BYTES = 5 * 1024 * 1024
-
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_SIZE_BYTES
+from services.backend import BackendError, MockBackend, create_backend
+from services.settings import Settings
+from services.validation import (
+    ValidationError,
+    normalize_email,
+    validate_date,
+    validate_month,
+    validate_nickname,
+    validate_password,
+    validate_upload,
+)
 
 
-def allowed_file(filename):
-    return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
+def _error(code: str, message: str, status_code: int):
+    return jsonify({"error": {"code": code, "message": message}}), status_code
 
 
-def allowed_mimetype(mimetype):
-    return isinstance(mimetype, str) and mimetype.startswith("image/")
+def create_app(settings: Settings | None = None, backend=None) -> Flask:
+    settings = settings or Settings()
+    backend = backend or create_backend(settings)
+    app = Flask(__name__)
+    CORS(app, supports_credentials=True, origins=["http://localhost:5173"])
+    app.config["MAX_CONTENT_LENGTH"] = settings.max_upload_size_bytes
+    app.config["SECRET_KEY"] = settings.session_secret
+    app.config["SESSION_COOKIE_HTTPONLY"] = True
+    app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+    app.config["SESSION_COOKIE_SECURE"] = settings.session_cookie_secure
 
+    def current_user_id() -> str:
+        if "anonymous_user_id" not in session:
+            session["anonymous_user_id"] = f"anonymous:{uuid4()}"
+        return session.get("authenticated_user_id", session["anonymous_user_id"])
 
-@app.route("/")
-def home():
-    return jsonify({"message": "Server Running", "status": "healthy"})
+    @app.errorhandler(ValidationError)
+    def handle_validation_error(error):
+        return _error("validation_error", str(error), 400)
 
+    @app.errorhandler(BackendError)
+    def handle_backend_error(error):
+        return _error(error.code, error.message, error.status_code)
 
-@app.route("/health")
-def health():
-    return jsonify({"status": "ok"})
+    @app.errorhandler(RequestEntityTooLarge)
+    def handle_large_upload(_error_value):
+        return _error("upload_too_large", "uploaded file exceeds size limit", 413)
 
+    @app.errorhandler(Exception)
+    def handle_unexpected_error(error):
+        app.logger.exception("Unhandled request error: %s", error)
+        return _error("internal_error", "internal server error", 500)
 
-@app.route("/analyze", methods=["POST"])
-def analyze():
+    @app.get("/")
+    def home():
+        return jsonify({"message": "Emotion Diary server", "status": "healthy"})
 
-    if "image" not in request.files:
-        return jsonify({"error": "image file is required"}), 400
+    @app.get("/health")
+    def health():
+        return jsonify({"status": "ok", "mode": settings.app_mode, "region": settings.aws_region})
 
-    file = request.files["image"]
+    @app.get("/v1/auth/session")
+    def auth_session():
+        user_id = session.get("authenticated_user_id")
+        user = backend.get_user(user_id) if user_id else None
+        if user_id and not user:
+            session.pop("authenticated_user_id", None)
+        current_user_id()
+        return jsonify({"user": user})
 
-    email = request.form.get("email")
-
-    if file.filename == "":
-        return jsonify({"error": "empty filename"}), 400
-
-    if not allowed_file(file.filename):
-        return jsonify({"error": "invalid file type"}), 400
-
-    if not allowed_mimetype(file.mimetype):
-        return jsonify({"error": "invalid mimetype"}), 400
-
-    filename = secure_filename(file.filename)
-
-    unique_filename = f"{uuid4()}_{filename}"
-
-    filepath = os.path.join(UPLOAD_FOLDER, unique_filename)
-
-    try:
-        file.save(filepath)
-
-        emotion_result = analyze_emotion(filepath)
-
-        playlist = recommend_music(emotion_result["emotion"])
-
-        diary_item = create_diary(
-            email=email,
-            emotion_result=emotion_result,
-            playlist=playlist,
-            image_filename=unique_filename,
+    @app.post("/v1/auth/signup")
+    def signup():
+        data = request.get_json(silent=True) or {}
+        user = backend.signup(
+            normalize_email(data.get("email")),
+            validate_password(data.get("password")),
+            validate_nickname(data.get("nickname")),
         )
-    except Exception:
-        return jsonify({"error": "internal error"}), 500
+        session["authenticated_user_id"] = user["userId"]
+        current_user_id()
+        return jsonify({"user": user}), 201
 
-    return jsonify(
-        {
-            "message": "analysis completed",
-            "email": email,
-            "emotion": emotion_result,
-            "playlist": playlist,
-            "saved_diary": diary_item,
-            "filename": unique_filename,
-        }
-    )
+    @app.post("/v1/auth/login")
+    def login():
+        data = request.get_json(silent=True) or {}
+        user = backend.authenticate(
+            normalize_email(data.get("email")),
+            validate_password(data.get("password")),
+        )
+        session["authenticated_user_id"] = user["userId"]
+        current_user_id()
+        return jsonify({"user": user})
+
+    @app.post("/v1/auth/logout")
+    def logout():
+        session.pop("authenticated_user_id", None)
+        current_user_id()
+        return "", 204
+
+    @app.post("/v1/uploads/presign")
+    def presign_upload():
+        data = request.get_json(silent=True) or {}
+        extension, content_type = validate_upload(data.get("filename"), data.get("contentType"))
+        return jsonify(backend.issue_upload(current_user_id(), extension, content_type))
+
+    @app.post("/v1/mock/uploads/<path:s3_key>")
+    def mock_upload(s3_key):
+        if not isinstance(backend, MockBackend):
+            return _error("not_found", "route is available only in mock mode", 404)
+        uploaded_file = request.files.get("file")
+        if not uploaded_file:
+            return _error("validation_error", "file is required", 400)
+        backend.store_upload(s3_key, uploaded_file)
+        return "", 204
+
+    @app.get("/v1/mock/images/<path:s3_key>")
+    def mock_image(s3_key):
+        if not isinstance(backend, MockBackend):
+            return _error("not_found", "route is available only in mock mode", 404)
+        image_path = backend.get_image_path(s3_key)
+        if not image_path.is_file():
+            return _error("not_found", "image not found", 404)
+        return send_file(image_path)
+
+    @app.post("/v1/entries")
+    def create_entry():
+        data = request.get_json(silent=True) or {}
+        entry_date = validate_date(data.get("date"))
+        s3_key = data.get("s3Key")
+        if not isinstance(s3_key, str):
+            raise ValidationError("s3Key is required")
+        return jsonify(backend.create_entry(current_user_id(), entry_date, s3_key)), 202
+
+    @app.get("/v1/entries")
+    def list_entries():
+        month = validate_month(request.args.get("month"))
+        return jsonify({"entries": backend.list_entries(current_user_id(), month)})
+
+    @app.get("/v1/entries/<entry_id>")
+    def get_entry(entry_id):
+        entry = backend.get_entry(current_user_id(), entry_id)
+        if not entry:
+            return _error("not_found", "entry not found", 404)
+        return jsonify(entry)
+
+    return app
+
+
+logging.basicConfig(level=logging.INFO)
+app = create_app()
 
 
 if __name__ == "__main__":
