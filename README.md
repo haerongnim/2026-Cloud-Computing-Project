@@ -172,7 +172,7 @@ python -m unittest discover
 * **사용 AI**: Gemini 3.1 pro (high) - Antigravity 사용 
 * **프롬프트 내용**: *"Based on current structure and project description, write Python unittest test suites. Requirements are as followed, 'Use only Python unittest (not pytest). Mock all AWS services (boto3, DynamoDB, Rekognition, SNS, SES, Secrets Manager). Do not require actual AWS credentials. Load Lambda handlers dynamically. Test should include happy paths, validation failures, duplicate requests, stale requests,idempotency, and other suggested aspects. Verify DynamoDB status transitions Verify Spotify recommendation workflow. Verify SNS publishing. Verify SES email generation. Verify email subject/body formatting. Verify authentication, signup, login, logout, and anonymous sessions. Verify upload validation and monthly diary listing.'"*
 
-**4. AWS Lambda 함수 코드 리팩토링 및 다듬기 **
+**4. AWS Lambda 함수 코드 리팩토링 및 다듬기**
 
 * **적용 범위**: 백엔드 Lambda 함수 소스 코드 일부 (오류 처리, 가독성 및 성능 개선)
 
